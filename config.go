@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 )
 
 type Config struct {
@@ -17,7 +17,7 @@ type Config struct {
 }
 
 func loadConfig() (*Config, error) {
-    file, err := ioutil.ReadFile("config.json")
+    file, err := os.ReadFile("config.json")
     if err != nil {
         return nil, fmt.Errorf("读取配置文件失败: %v", err)
     }
