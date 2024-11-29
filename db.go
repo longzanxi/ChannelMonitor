@@ -10,22 +10,15 @@ import (
 )
 
 func NewDB(config Config) (*gorm.DB, error) {
-	var dialector gorm.Dialector
+	dialectors := map[string]gorm.Dialector{
+		"mysql":     mysql.Open(config.DbDsn),
+		"sqlite":    sqlite.Open(config.DbDsn),
+		"postgres":  postgres.Open(config.DbDsn),
+		"sqlserver": sqlserver.Open(config.DbDsn),
+	}
 
-	switch config.DbType {
-	case "mysql":
-		dialector = mysql.Open(config.DbDsn)
-
-	case "sqlite":
-		dialector = sqlite.Open(config.DbDsn)
-
-	case "postgres":
-		dialector = postgres.Open(config.DbDsn)
-
-	case "sqlserver":
-		dialector = sqlserver.Open(config.DbDsn)
-
-	default:
+	dialector, ok := dialectors[config.DbType]
+	if !ok {
 		return nil, fmt.Errorf("unsupported database type: %s", config.DbType)
 	}
 

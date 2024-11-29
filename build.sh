@@ -21,6 +21,13 @@ PLATFORMS=(
     "windows/arm64"
 )
 
+# 安装 upx
+if ! command -v upx >/dev/null 2>&1; then
+    echo "Installing upx..."
+    sudo apt-get update
+    sudo apt-get install -y upx
+fi
+
 # 编译函数
 build() {
     local GOOS=$1
@@ -38,9 +45,7 @@ build() {
     if [ $? -eq 0 ]; then
         echo "✅ Finished building for ${GOOS}/${GOARCH}"
         # 压缩二进制文件
-        if command -v upx >/dev/null 2>&1; then
-            upx --best --lzma "${OUTPUT}"
-        fi
+        upx --best --lzma "${OUTPUT}"
     else
         echo "❌ Failed building for ${GOOS}/${GOARCH}"
     fi
@@ -56,11 +61,10 @@ echo "Version: ${VERSION}"
 echo "Commit ID: ${COMMIT_ID}"
 echo "Build Time: ${BUILD_TIME}"
 
-# 遍历并编译所有平台
-for PLATFORM in "${PLATFORMS[@]}"; do
-    GOOS=${PLATFORM%/*}
-    GOARCH=${PLATFORM#*/}
-    build $GOOS $GOARCH
-done
+# 并行编译所有平台
+echo "${PLATFORMS[@]}" | xargs -n 1 -P 4 -I {} bash -c 'GOOS=${1%/*} GOARCH=${1#*/} build $GOOS $GOARCH' _ {}
 
 echo "✨ Build process completed!"
+
+# 清理后台进程
+trap 'kill $(jobs -p)' EXIT

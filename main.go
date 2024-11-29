@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -246,52 +247,68 @@ func testChannelModels(channel Channel) ([]string, error) {
 		}
 	}
 
+	var wg sync.WaitGroup
+	modelChan := make(chan string, len(modelList))
+
 	for _, model := range modelList {
-		url := channel.BaseURL
-		if !strings.Contains(channel.BaseURL, "/v1/chat/completions") {
-			if !strings.HasSuffix(channel.BaseURL, "/chat") {
-				if !strings.HasSuffix(channel.BaseURL, "/v1") {
-					url += "/v1"
+		wg.Add(1)
+		go func(model string) {
+			defer wg.Done()
+			url := channel.BaseURL
+			if !strings.Contains(channel.BaseURL, "/v1/chat/completions") {
+				if !strings.HasSuffix(channel.BaseURL, "/chat") {
+					if !strings.HasSuffix(channel.BaseURL, "/v1") {
+						url += "/v1"
+					}
+					url += "/chat"
 				}
-				url += "/chat"
+				url += "/completions"
 			}
-			url += "/completions"
-		}
 
-		reqBody := map[string]interface{}{
-			"model": model,
-			"messages": []map[string]string{
-				{"role": "user", "content": "Hello! Reply in short"},
-			},
-		}
-		jsonData, _ := json.Marshal(reqBody)
+			reqBody := map[string]interface{}{
+				"model": model,
+				"messages": []map[string]string{
+					{"role": "user", "content": "Hello! Reply in short"},
+				},
+			}
+			jsonData, _ := json.Marshal(reqBody)
 
-		log.Printf("测试渠道 %s(ID:%d) 的模型 %s\n", channel.Name, channel.ID, model)
+			log.Printf("测试渠道 %s(ID:%d) 的模型 %s\n", channel.Name, channel.ID, model)
 
-		req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonData)))
-		if err != nil {
-			log.Println("创建请求失败：", err)
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+channel.Key)
+			req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonData)))
+			if err != nil {
+				log.Println("创建请求失败：", err)
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+channel.Key)
 
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("\033[31m请求失败：%v\033[0m\n", err)
-			continue
-		}
-		defer resp.Body.Close()
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Printf("\033[31m请求失败：%v\033[0m\n", err)
+				return
+			}
+			defer resp.Body.Close()
 
-		body, _ := ioutil.ReadAll(resp.Body)
-		if resp.StatusCode == http.StatusOK {
-			availableModels = append(availableModels, model)
-			log.Printf("\033[32m渠道 %s(ID:%d) 的模型 %s 测试成功\033[0m\n", channel.Name, channel.ID, model)
-		} else {
-			log.Printf("\033[31m渠道 %s(ID:%d) 的模型 %s 测试失败，状态码：%d，响应：%s\033[0m\n",
-				channel.Name, channel.ID, model, resp.StatusCode, string(body))
-		}
+			body, _ := ioutil.ReadAll(resp.Body)
+			if resp.StatusCode == http.StatusOK {
+				modelChan <- model
+				log.Printf("\033[32m渠道 %s(ID:%d) 的模型 %s 测试成功\033[0m\n", channel.Name, channel.ID, model)
+			} else {
+				log.Printf("\033[31m渠道 %s(ID:%d) 的模型 %s 测试失败，状态码：%d，响应：%s\033[0m\n",
+					channel.Name, channel.ID, model, resp.StatusCode, string(body))
+			}
+		}(model)
+	}
+
+	go func() {
+		wg.Wait()
+		close(modelChan)
+	}()
+
+	for model := range modelChan {
+		availableModels = append(availableModels, model)
 	}
 
 	return availableModels, nil
@@ -325,34 +342,40 @@ func main() {
 			continue
 		}
 
+		var wg sync.WaitGroup
 		for _, channel := range channels {
-			log.Printf("开始测试渠道 %s(ID:%d) 的模型\n", channel.Name, channel.ID)
+			wg.Add(1)
+			go func(channel Channel) {
+				defer wg.Done()
+				log.Printf("开始测试渠道 %s(ID:%d) 的模型\n", channel.Name, channel.ID)
 
-			// 获取渠道配置
-			cfg, err := getChannelDefaultConfig(channel.ID)
-			if err != nil {
-				log.Printf("获取渠道配置失败：%v，使用默认配置", err)
-				cfg = ChannelConfig{0, 1}
-			}
-			log.Printf("渠道 %s(ID:%d) 使用配置：priority=%d, weight=%d\n",
-				channel.Name, channel.ID, cfg.Priority, cfg.Weight)
+				// 获取渠道配置
+				cfg, err := getChannelDefaultConfig(channel.ID)
+				if err != nil {
+					log.Printf("获取渠道配置失败：%v，使用默认配置", err)
+					cfg = ChannelConfig{0, 1}
+				}
+				log.Printf("渠道 %s(ID:%d) 使用配置：priority=%d, weight=%d\n",
+					channel.Name, channel.ID, cfg.Priority, cfg.Weight)
 
-			// 测试模型
-			models, err := testChannelModels(channel)
-			if err != nil {
-				log.Printf("\033[31m渠道 %s(ID:%d) 测试模型失败：%v\033[0m\n",
-					channel.Name, channel.ID, err)
-				continue
-			}
+				// 测试模型
+				models, err := testChannelModels(channel)
+				if err != nil {
+					log.Printf("\033[31m渠道 %s(ID:%d) 测试模型失败：%v\033[0m\n",
+						channel.Name, channel.ID, err)
+					return
+				}
 
-			// 更新数据库
-			if err := updateChannelModels(channel, models, cfg); err != nil {
-				log.Printf("\033[31m更新渠道 %s(ID:%d) 的模型失败：%v\033[0m\n",
-					channel.Name, channel.ID, err)
-			} else {
-				log.Printf("渠道 %s(ID:%d) 可用模型：%v\n", channel.Name, channel.ID, models)
-			}
+				// 更新数据库
+				if err := updateChannelModels(channel, models, cfg); err != nil {
+					log.Printf("\033[31m更新渠道 %s(ID:%d) 的模型失败：%v\033[0m\n",
+						channel.Name, channel.ID, err)
+				} else {
+					log.Printf("渠道 %s(ID:%d) 可用模型：%v\n", channel.Name, channel.ID, models)
+				}
+			}(channel)
 		}
+		wg.Wait()
 
 		<-ticker.C
 	}
